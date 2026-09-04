@@ -1,21 +1,29 @@
 name: Build Signed Cube Diagnose AAB
 
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
+  push:
+    paths:
+      - 'app/**'
+      - 'build.gradle.kts'
+      - 'settings.gradle.kts'
+      - '.github/workflows/build-aab-signed.yml'
 
 jobs:
   build:
     runs-on: ubuntu-latest
 
+    env:
+      KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+      KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+      KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
+      - name: Set up Java 17
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
@@ -25,38 +33,34 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: Build AAB
-        run: gradle :app:bundleDebug
-
-      - name: Create signing keystore
+      - name: Restore permanent release keystore
+        shell: bash
         run: |
-          keytool -genkeypair -v \
-            -keystore cube-diagnose.jks \
-            -storepass CubeDiagnose2026 \
-            -keypass CubeDiagnose2026 \
-            -alias cube-diagnose \
-            -keyalg RSA \
-            -keysize 2048 \
-            -validity 10000 \
-            -dname "CN=MR Beauty Cube Diagnose, OU=MR Beauty, O=MR Beauty, L=Regensdorf, ST=ZH, C=CH"
+          printf '%s' '${{ secrets.KEYSTORE_BASE64 }}' | base64 --decode > release-keystore.jks
+          test -s release-keystore.jks
 
-      - name: Sign AAB
+      - name: Verify permanent keystore
+        shell: bash
         run: |
-          jarsigner \
-            -keystore cube-diagnose.jks \
-            -storepass CubeDiagnose2026 \
-            -keypass CubeDiagnose2026 \
-            app/build/outputs/bundle/debug/app-debug.aab \
-            cube-diagnose
+          keytool -list -v             -keystore release-keystore.jks             -storepass "$KEYSTORE_PASSWORD"             -alias "$KEY_ALIAS"
 
-      - name: Verify signature
-        run: jarsigner -verify -verbose -certs app/build/outputs/bundle/debug/app-debug.aab
+      - name: Build signed release AAB
+        run: gradle :app:bundleRelease --stacktrace
 
-      - name: Rename signed AAB
-        run: cp app/build/outputs/bundle/debug/app-debug.aab Cube-Diagnose-1.0.0-signed.aab
+      - name: Copy signed AAB
+        shell: bash
+        run: |
+          AAB=$(find app/build/outputs/bundle/release -type f -name "*.aab" | head -1)
+          test -n "$AAB"
+          cp "$AAB" Cube-Diagnose-1.0.0-signed.aab
+
+      - name: Verify AAB signature
+        run: |
+          jarsigner -verify -verbose -certs Cube-Diagnose-1.0.0-signed.aab
 
       - name: Upload signed AAB
         uses: actions/upload-artifact@v4
         with:
           name: Cube-Diagnose-SIGNED-AAB
           path: Cube-Diagnose-1.0.0-signed.aab
+          if-no-files-found: error
